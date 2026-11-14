@@ -92,11 +92,19 @@ jobs:
           COWORKERS_ACCESS_TEAM_DOMAIN: ${{ vars.COWORKERS_ACCESS_TEAM_DOMAIN }}
           COWORKERS_ACCESS_AUD: ${{ vars.COWORKERS_ACCESS_AUD }}
         run: node scripts/upstream-sync/validate-artifact.mjs
+      - name: Verify uploadable deploy artifact
+        if: steps.suppression.outputs.status == 'candidate-ready'
+        run: |
+          test -s .upstream-artifact/metadata.json
+          test -s .upstream-artifact/candidate.patch
+          test -s .upstream-artifact/candidate.bundle
+          test -d .upstream-artifact/output
       - uses: actions/upload-artifact@v4
         if: steps.suppression.outputs.status == 'candidate-ready'
         with:
           name: coworkers-upstream-${{ github.run_id }}
           path: .upstream-artifact
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 3
       - name: Record sync status
@@ -116,6 +124,15 @@ jobs:
             --arg upstream_sha "$UPSTREAM" \
             '{status:$status,reason:$reason,upstream_sha:$upstream_sha}' \
             > .sync-result/status.json
+      - name: Verify uploadable sync status
+        if: |
+          steps.suppression.outputs.status == 'no-update' ||
+          steps.suppression.outputs.status == 'candidate-ready' ||
+          steps.suppression.outputs.status == 'failed-candidate-suppressed'
+        run: |
+          test -s .sync-result/status.json
+          jq -e --arg expected "${{ steps.suppression.outputs.status }}" \
+            '.status == $expected' .sync-result/status.json >/dev/null
       - uses: actions/upload-artifact@v4
         if: |
           steps.suppression.outputs.status == 'no-update' ||
@@ -124,6 +141,7 @@ jobs:
         with:
           name: coworkers-status-${{ github.run_id }}
           path: .sync-result
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 1
 

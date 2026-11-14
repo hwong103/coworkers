@@ -21,7 +21,7 @@ function output(entries) {
     path,
     Object.entries(entries)
       .map(([key, value]) => `${key}=${String(value).replace(/\n/g, " ")}`)
-      .join("\n") + "\n",
+      .join("\n") + "\n"
   )
 }
 
@@ -40,10 +40,15 @@ for (const [name, value] of Object.entries({
 }
 
 const base = git(["rev-parse", "HEAD"], root)
-git(["fetch", "--no-tags", upstreamUrl, "main:refs/remotes/upstream/main"], root, {
-  stdio: ["ignore", "pipe", "inherit"],
-})
+git(
+  ["fetch", "--no-tags", upstreamUrl, "main:refs/remotes/upstream/main"],
+  root,
+  {
+    stdio: ["ignore", "pipe", "inherit"],
+  }
+)
 const upstream = git(["rev-parse", "refs/remotes/upstream/main"], root)
+output({ upstream_sha: upstream })
 
 if (gitSucceeds(["merge-base", "--is-ancestor", upstream, base], root)) {
   stop("no-update", `upstream ${upstream} is already integrated`)
@@ -87,13 +92,13 @@ writeFileSync(
       accessAud,
     },
     null,
-    2,
-  )}\n`,
+    2
+  )}\n`
 )
 git(
   ["commit", "-m", `Automated upstream update ${upstream.slice(0, 12)}`],
   root,
-  { stdio: ["ignore", "pipe", "inherit"] },
+  { stdio: ["ignore", "pipe", "inherit"] }
 )
 
 output({

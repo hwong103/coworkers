@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "worker": "coworkers",
+  "expectedVersionId": "edccdc14-2854-4729-b9dd-8c0900178c90",
+  "deployedUpstreamSha": "8cc548bdb86c0a68b25f8b4629db2c4f5c3f3352",
+  "deployedCandidateSha": "1da52e1133c07d19768a719d5a22537d634a1cdc",
+  "deployedAt": null
+}

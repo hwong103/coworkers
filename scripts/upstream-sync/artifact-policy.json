@@ -1,0 +1,54 @@
+{
+  "workerName": "coworkers",
+  "compatibilityDate": "2026-09-01",
+  "compatibilityFlags": [
+    "nodejs_compat",
+    "durable_object_io_tasks_prevent_eviction"
+  ],
+  "previewUrls": false,
+  "observability": {
+    "enabled": true
+  },
+  "bindings": {
+    "AI": { "type": "ai", "dev": { "remote": true } },
+    "BROWSER": { "type": "browser", "dev": { "remote": true } },
+    "QUICK_ACTION_ENGINE": { "type": "text", "value": "kitesurf" },
+    "BROWSER_RUN_ACCOUNT_ID": { "type": "text", "value": "" },
+    "BROWSER_RUN_API_TOKEN": { "type": "secret" },
+    "ACCOUNT_ID": { "type": "text", "value": "$ACCOUNT_ID" },
+    "AI_GATEWAY_API_TOKEN": { "type": "secret" },
+    "LOADER": { "type": "worker-loader" },
+    "UserHub": { "type": "durable-object", "worker": "coworkers", "exportName": "UserHub" },
+    "BotAgent": { "type": "durable-object", "worker": "coworkers", "exportName": "BotAgent" },
+    "AppLive": { "type": "durable-object", "worker": "coworkers", "exportName": "AppLive" },
+    "OAuthStore": { "type": "durable-object", "worker": "coworkers", "exportName": "OAuthStore" },
+    "EmailDirectory": { "type": "durable-object", "worker": "coworkers", "exportName": "EmailDirectory" },
+    "MODEL": { "type": "text", "value": "dynamic/command-code" },
+    "FALLBACK_MODEL": { "type": "text", "value": "@cf/deepseek-ai/deepseek-v4.1-flash-1017" },
+    "BACKGROUND_MODEL": { "type": "text", "value": "" },
+    "AI_GATEWAY_ID": { "type": "text", "value": "coworkers" },
+    "ACCESS_TEAM_DOMAIN": { "type": "text", "value": "$ACCESS_TEAM_DOMAIN" },
+    "ACCESS_AUD": { "type": "text", "value": "$ACCESS_AUD" },
+    "EMAIL_DOMAIN": { "type": "text", "value": "" },
+    "EMAIL_ZONE_ID": { "type": "text", "value": "" },
+    "EMAIL_ROUTING_API_TOKEN": { "type": "text", "value": "" },
+    "SEND_EMAIL": { "type": "send-email" },
+    "WORKER_NAME": { "type": "text", "value": "coworkers" },
+    "VAPID_PUBLIC_KEY": { "type": "secret" },
+    "VAPID_PRIVATE_KEY": { "type": "secret" },
+    "VAPID_SUBJECT": { "type": "text", "value": "mailto:bots@example.com" }
+  },
+  "exports": {
+    "UserHub": { "type": "durable-object", "storage": "sqlite" },
+    "BotAgent": { "type": "durable-object", "storage": "sqlite" },
+    "AppLive": { "type": "durable-object", "storage": "sqlite" },
+    "OAuthStore": { "type": "durable-object", "storage": "sqlite" },
+    "EmailDirectory": { "type": "durable-object", "storage": "sqlite" }
+  },
+  "secretBindings": [
+    "AI_GATEWAY_API_TOKEN",
+    "BROWSER_RUN_API_TOKEN",
+    "VAPID_PRIVATE_KEY",
+    "VAPID_PUBLIC_KEY"
+  ]
+}

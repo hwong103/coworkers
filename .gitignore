@@ -9,6 +9,7 @@ count.txt
 .tanstack
 .wrangler
 .cloudflare
+.upstream-artifact
 .output
 .vinxi
 __unconfig*

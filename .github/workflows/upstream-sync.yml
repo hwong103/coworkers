@@ -1,0 +1,136 @@
+name: Upstream sync candidate
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: coworkers-upstream-sync
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  candidate:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      status: ${{ steps.prepare.outputs.status }}
+      reason: ${{ steps.prepare.outputs.reason }}
+      upstream_sha: ${{ steps.prepare.outputs.upstream_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.9.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Configure Git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      - name: Fetch and gate upstream
+        id: prepare
+        env:
+          COWORKERS_ACCOUNT_ID: ${{ vars.COWORKERS_ACCOUNT_ID }}
+          COWORKERS_ACCESS_TEAM_DOMAIN: ${{ vars.COWORKERS_ACCESS_TEAM_DOMAIN }}
+          COWORKERS_ACCESS_AUD: ${{ vars.COWORKERS_ACCESS_AUD }}
+        run: node scripts/upstream-sync/prepare.mjs
+      - name: Stop when update is blocked
+        if: steps.prepare.outputs.status != 'candidate-ready' && steps.prepare.outputs.status != 'no-update'
+        run: exit 1
+      - run: pnpm install --frozen-lockfile
+        if: steps.prepare.outputs.status == 'candidate-ready'
+      - run: pnpm test
+        if: steps.prepare.outputs.status == 'candidate-ready'
+      - run: node --test scripts/upstream-sync/upstream-sync.test.mjs
+        if: steps.prepare.outputs.status == 'candidate-ready'
+      - run: pnpm typecheck
+        if: steps.prepare.outputs.status == 'candidate-ready'
+      - run: pnpm build
+        if: steps.prepare.outputs.status == 'candidate-ready'
+      - name: Ensure build did not rewrite trusted source
+        if: steps.prepare.outputs.status == 'candidate-ready'
+        run: git diff --exit-code
+      - name: Create deploy artifact
+        env:
+          BASE_SHA: ${{ steps.prepare.outputs.base_sha }}
+          UPSTREAM_SHA: ${{ steps.prepare.outputs.upstream_sha }}
+          COWORKERS_ACCOUNT_ID: ${{ vars.COWORKERS_ACCOUNT_ID }}
+          COWORKERS_ACCESS_TEAM_DOMAIN: ${{ vars.COWORKERS_ACCESS_TEAM_DOMAIN }}
+          COWORKERS_ACCESS_AUD: ${{ vars.COWORKERS_ACCESS_AUD }}
+        run: node scripts/upstream-sync/create-artifact.mjs
+        if: steps.prepare.outputs.status == 'candidate-ready'
+      - name: Validate deploy artifact
+        if: steps.prepare.outputs.status == 'candidate-ready'
+        env:
+          ARTIFACT_DIR: ${{ github.workspace }}/.upstream-artifact
+          COWORKERS_ACCOUNT_ID: ${{ vars.COWORKERS_ACCOUNT_ID }}
+          COWORKERS_ACCESS_TEAM_DOMAIN: ${{ vars.COWORKERS_ACCESS_TEAM_DOMAIN }}
+          COWORKERS_ACCESS_AUD: ${{ vars.COWORKERS_ACCESS_AUD }}
+        run: node scripts/upstream-sync/validate-artifact.mjs
+      - uses: actions/upload-artifact@v4
+        if: steps.prepare.outputs.status == 'candidate-ready'
+        with:
+          name: coworkers-upstream-${{ github.run_id }}
+          path: .upstream-artifact
+          if-no-files-found: error
+          retention-days: 3
+      - name: Record sync status
+        if: steps.prepare.outputs.status == 'no-update' || steps.prepare.outputs.status == 'candidate-ready'
+        env:
+          STATUS: ${{ steps.prepare.outputs.status }}
+        run: |
+          mkdir -p .sync-result
+          jq -n --arg status "$STATUS" '{status:$status}' > .sync-result/status.json
+      - uses: actions/upload-artifact@v4
+        if: steps.prepare.outputs.status == 'no-update' || steps.prepare.outputs.status == 'candidate-ready'
+        with:
+          name: coworkers-status-${{ github.run_id }}
+          path: .sync-result
+          if-no-files-found: error
+          retention-days: 1
+
+  notify-failure:
+    if: always() && needs.candidate.result != 'success'
+    needs: candidate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/github-script@v7
+        env:
+          ISSUE: ${{ vars.COWORKERS_UPDATE_ISSUE_NUMBER }}
+          STATUS: ${{ needs.candidate.outputs.status }}
+          REASON: ${{ needs.candidate.outputs.reason }}
+          UPSTREAM: ${{ needs.candidate.outputs.upstream_sha }}
+        with:
+          script: |
+            const issue = Number(process.env.ISSUE)
+            if (!issue) throw new Error("COWORKERS_UPDATE_ISSUE_NUMBER repository variable is required")
+            const body = [
+              "### Coworkers upstream sync failed",
+              `- Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              `- Status: ${process.env.STATUS || "candidate failed"}`,
+              `- Upstream: ${process.env.UPSTREAM || "unknown"}`,
+              `- Reason: ${process.env.REASON || "Tests, build, or artifact validation failed"}`,
+              "",
+              "Production was not changed by this workflow.",
+            ].join("\n")
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue,
+              body,
+            })

@@ -1,0 +1,155 @@
+name: Upstream deploy
+
+on:
+  workflow_run:
+    workflows: ["Upstream sync candidate"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Successful upstream-sync workflow run ID
+        required: true
+
+concurrency:
+  group: coworkers-production
+  cancel-in-progress: false
+
+permissions:
+  actions: read
+  contents: write
+  issues: write
+
+jobs:
+  preflight:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      status: ${{ steps.status.outputs.status }}
+    env:
+      SYNC_RUN_ID: ${{ github.event.workflow_run.id || inputs.run_id }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: coworkers-status-${{ env.SYNC_RUN_ID }}
+          path: /tmp/sync-status
+          run-id: ${{ env.SYNC_RUN_ID }}
+          github-token: ${{ github.token }}
+      - name: Read sync status
+        id: status
+        run: |
+          status="$(jq -r .status /tmp/sync-status/status.json)"
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          test "$status" = "candidate-ready" || test "$status" = "no-update"
+
+  deploy:
+    if: needs.preflight.outputs.status == 'candidate-ready'
+    needs: preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: coworkers-production
+    env:
+      SYNC_RUN_ID: ${{ github.event.workflow_run.id || inputs.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: coworkers-upstream-${{ env.SYNC_RUN_ID }}
+          path: /tmp/upstream-artifact
+          run-id: ${{ env.SYNC_RUN_ID }}
+          github-token: ${{ github.token }}
+      - name: Validate artifact from trusted policy
+        env:
+          ARTIFACT_DIR: /tmp/upstream-artifact
+          COWORKERS_ACCOUNT_ID: ${{ vars.COWORKERS_ACCOUNT_ID }}
+          COWORKERS_ACCESS_TEAM_DOMAIN: ${{ vars.COWORKERS_ACCESS_TEAM_DOMAIN }}
+          COWORKERS_ACCESS_AUD: ${{ vars.COWORKERS_ACCESS_AUD }}
+        run: node scripts/upstream-sync/validate-artifact.mjs
+      - name: Install exact CF uploader
+        run: npm install --global --ignore-scripts cf@1.0.0-beta.6
+      - name: Preflight candidate patch
+        env:
+          ARTIFACT_DIR: /tmp/upstream-artifact
+        run: |
+          git apply --check "$ARTIFACT_DIR/candidate.patch"
+      - name: Deploy validated artifact
+        env:
+          ARTIFACT_DIR: /tmp/upstream-artifact
+          COWORKERS_ACCOUNT_ID: ${{ vars.COWORKERS_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: node scripts/upstream-sync/release.mjs
+      - name: Record successful release
+        env:
+          ARTIFACT_DIR: /tmp/upstream-artifact
+        run: node scripts/upstream-sync/finalize.mjs
+      - name: Push released source to main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
+          git config http.https://github.com/.extraheader "AUTHORIZATION: basic ${auth}"
+          git push origin HEAD:main
+      - name: Report successful release
+        if: success()
+        uses: actions/github-script@v7
+        env:
+          ISSUE: ${{ vars.COWORKERS_UPDATE_ISSUE_NUMBER }}
+        with:
+          script: |
+            const fs = require("fs")
+            const result = JSON.parse(fs.readFileSync("/tmp/upstream-artifact/deployment-result.json", "utf8"))
+            const metadata = JSON.parse(fs.readFileSync("/tmp/upstream-artifact/metadata.json", "utf8"))
+            const warnings = result.warnings ?? []
+            const body = [
+              "### Coworkers automated deploy completed",
+              `- Upstream: ${metadata.upstream_sha}`,
+              `- Version: ${result.state.expectedVersionId}`,
+              `- Deploy attempts: ${result.attempts}`,
+              ...(warnings.length ? ["- Warnings:", ...warnings.map((item) => `  - ${item}`)] : []),
+              "",
+              "Tests and artifact checks passed. Asset smoke checks do not prove signed-in runtime behavior.",
+            ].join("\n")
+            const issue = Number(process.env.ISSUE)
+            if (!issue) throw new Error("COWORKERS_UPDATE_ISSUE_NUMBER repository variable is required")
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue,
+              body,
+            })
+
+  notify-failure:
+    if: always() && (needs.preflight.result == 'failure' || needs.deploy.result == 'failure' || needs.deploy.result == 'cancelled')
+    needs: [preflight, deploy]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/github-script@v7
+        env:
+          ISSUE: ${{ vars.COWORKERS_UPDATE_ISSUE_NUMBER }}
+        with:
+          script: |
+            const issue = Number(process.env.ISSUE)
+            if (!issue) throw new Error("COWORKERS_UPDATE_ISSUE_NUMBER repository variable is required")
+            const body = [
+              "### Coworkers automated deploy failed",
+              `- Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              "- Source main was not advanced when the release failed.",
+              "- If the deploy never became live, re-run the deploy workflow with the retained candidate run ID.",
+              "- If live version changed during a failed release, automatic retry is disabled and manual reconciliation is required.",
+              "",
+              "No automatic rollback was attempted.",
+            ].join("\n")
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue,
+              body,
+            })

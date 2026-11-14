@@ -104,14 +104,7 @@ jobs:
       - name: Verify candidate merge ancestry
         env:
           ARTIFACT_DIR: /tmp/upstream-artifact
-        run: |
-          git apply --check "$ARTIFACT_DIR/candidate.patch"
-          git fetch "$ARTIFACT_DIR/candidate.bundle" refs/heads/upstream-candidate:refs/remotes/upstream-candidate
-          candidate="$(git rev-parse refs/remotes/upstream-candidate)"
-          test "$(jq -r .candidate_sha "$ARTIFACT_DIR/metadata.json")" = "$candidate"
-          test "$(git rev-parse "$candidate^1")" = "$(jq -r .base_sha "$ARTIFACT_DIR/metadata.json")"
-          test "$(git rev-parse "$candidate^2")" = "$(jq -r .upstream_sha "$ARTIFACT_DIR/metadata.json")"
-          test "$(git rev-list --parents -n 1 "$candidate" | wc -w)" = "3"
+        run: node scripts/upstream-sync/verify-bundle.mjs
       - name: Deploy validated artifact
         env:
           ARTIFACT_DIR: /tmp/upstream-artifact

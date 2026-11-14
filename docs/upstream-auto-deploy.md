@@ -34,8 +34,9 @@ Automatic deployment stops before merge or deploy when an update changes:
   exports, compatibility settings, routes, triggers, or preview policy.
 - Authentication, security guards, secret handling, MCP OAuth, hook routes,
   or deployment upload code.
-- Migration directories or schema/storage initialization in agent source,
-  including inline SQL and Durable Object storage calls.
+- Migration directories or any file under `src/agents/`. This deliberately
+  rejects every agent-source change, including ordinary edits, because
+  stateful calls such as inline SQL cannot be classified safely from a diff.
 
 The artifact validator also checks the account ID, Worker name, exact binding
 map, secret binding names, exports, production build mode, routes, triggers,
@@ -90,6 +91,22 @@ If `cf deploy` fails while live remains unchanged, it retries once. If live may
 have changed, it stops without retrying. Re-run the deploy workflow with the
 retained sync run ID only when the failure report confirms the release never
 became live.
+
+Any failed sync or deploy posts an HTML marker containing the upstream SHA to
+the update issue. While that marker exists, scheduled syncs skip the same
+upstream SHA before installing dependencies or building. The marker is durable
+across runs and survives workflow restarts.
+
+To retry intentionally:
+
+1. For a build, test, or artifact failure, fix the trusted automation on
+   `main` if required, then manually run **Upstream sync candidate**. Manual
+   dispatch bypasses scheduled failure suppression.
+2. For a deploy failure where live never changed, manually run
+   **Upstream deploy** with the retained successful sync run ID.
+3. Do not delete the failure marker merely to make the schedule retry. A
+   successful manual release advances `main`; future schedules then see the
+   upstream commit as already integrated.
 
 The `manifest.webmanifest` and `sw.js` checks are smoke signals only. They do
 not prove signed-in chat, WebSocket, Durable Object, MCP, or tool behavior.

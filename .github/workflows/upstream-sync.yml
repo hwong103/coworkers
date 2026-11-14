@@ -11,6 +11,7 @@ concurrency:
 
 permissions:
   contents: read
+  issues: read
 
 jobs:
   candidate:
@@ -18,8 +19,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     outputs:
-      status: ${{ steps.prepare.outputs.status }}
-      reason: ${{ steps.prepare.outputs.reason }}
+      status: ${{ steps.suppression.outputs.status }}
+      reason: ${{ steps.suppression.outputs.reason }}
       upstream_sha: ${{ steps.prepare.outputs.upstream_sha }}
     steps:
       - uses: actions/checkout@v4
@@ -45,21 +46,34 @@ jobs:
           COWORKERS_ACCESS_TEAM_DOMAIN: ${{ vars.COWORKERS_ACCESS_TEAM_DOMAIN }}
           COWORKERS_ACCESS_AUD: ${{ vars.COWORKERS_ACCESS_AUD }}
         run: node scripts/upstream-sync/prepare.mjs
+      - name: Check persistent failed-candidate suppression
+        id: suppression
+        env:
+          PREPARE_STATUS: ${{ steps.prepare.outputs.status }}
+          PREPARE_REASON: ${{ steps.prepare.outputs.reason }}
+          UPSTREAM_SHA: ${{ steps.prepare.outputs.upstream_sha }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          COWORKERS_UPDATE_ISSUE_NUMBER: ${{ vars.COWORKERS_UPDATE_ISSUE_NUMBER }}
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/upstream-sync/check-failure.mjs
       - name: Stop when update is blocked
-        if: steps.prepare.outputs.status != 'candidate-ready' && steps.prepare.outputs.status != 'no-update'
+        if: |
+          steps.suppression.outputs.status != 'candidate-ready' &&
+          steps.suppression.outputs.status != 'no-update' &&
+          steps.suppression.outputs.status != 'failed-candidate-suppressed'
         run: exit 1
       - run: pnpm install --frozen-lockfile
-        if: steps.prepare.outputs.status == 'candidate-ready'
+        if: steps.suppression.outputs.status == 'candidate-ready'
       - run: pnpm test
-        if: steps.prepare.outputs.status == 'candidate-ready'
+        if: steps.suppression.outputs.status == 'candidate-ready'
       - run: node --test scripts/upstream-sync/*.test.mjs
-        if: steps.prepare.outputs.status == 'candidate-ready'
+        if: steps.suppression.outputs.status == 'candidate-ready'
       - run: pnpm typecheck
-        if: steps.prepare.outputs.status == 'candidate-ready'
+        if: steps.suppression.outputs.status == 'candidate-ready'
       - run: pnpm build
-        if: steps.prepare.outputs.status == 'candidate-ready'
+        if: steps.suppression.outputs.status == 'candidate-ready'
       - name: Ensure build did not rewrite trusted source
-        if: steps.prepare.outputs.status == 'candidate-ready'
+        if: steps.suppression.outputs.status == 'candidate-ready'
         run: git diff --exit-code
       - name: Create deploy artifact
         env:
@@ -69,9 +83,9 @@ jobs:
           COWORKERS_ACCESS_TEAM_DOMAIN: ${{ vars.COWORKERS_ACCESS_TEAM_DOMAIN }}
           COWORKERS_ACCESS_AUD: ${{ vars.COWORKERS_ACCESS_AUD }}
         run: node scripts/upstream-sync/create-artifact.mjs
-        if: steps.prepare.outputs.status == 'candidate-ready'
+        if: steps.suppression.outputs.status == 'candidate-ready'
       - name: Validate deploy artifact
-        if: steps.prepare.outputs.status == 'candidate-ready'
+        if: steps.suppression.outputs.status == 'candidate-ready'
         env:
           ARTIFACT_DIR: ${{ github.workspace }}/.upstream-artifact
           COWORKERS_ACCOUNT_ID: ${{ vars.COWORKERS_ACCOUNT_ID }}
@@ -79,21 +93,34 @@ jobs:
           COWORKERS_ACCESS_AUD: ${{ vars.COWORKERS_ACCESS_AUD }}
         run: node scripts/upstream-sync/validate-artifact.mjs
       - uses: actions/upload-artifact@v4
-        if: steps.prepare.outputs.status == 'candidate-ready'
+        if: steps.suppression.outputs.status == 'candidate-ready'
         with:
           name: coworkers-upstream-${{ github.run_id }}
           path: .upstream-artifact
           if-no-files-found: error
           retention-days: 3
       - name: Record sync status
-        if: steps.prepare.outputs.status == 'no-update' || steps.prepare.outputs.status == 'candidate-ready'
+        if: |
+          steps.suppression.outputs.status == 'no-update' ||
+          steps.suppression.outputs.status == 'candidate-ready' ||
+          steps.suppression.outputs.status == 'failed-candidate-suppressed'
         env:
-          STATUS: ${{ steps.prepare.outputs.status }}
+          STATUS: ${{ steps.suppression.outputs.status }}
+          REASON: ${{ steps.suppression.outputs.reason }}
+          UPSTREAM: ${{ steps.prepare.outputs.upstream_sha }}
         run: |
           mkdir -p .sync-result
-          jq -n --arg status "$STATUS" '{status:$status}' > .sync-result/status.json
+          jq -n \
+            --arg status "$STATUS" \
+            --arg reason "$REASON" \
+            --arg upstream_sha "$UPSTREAM" \
+            '{status:$status,reason:$reason,upstream_sha:$upstream_sha}' \
+            > .sync-result/status.json
       - uses: actions/upload-artifact@v4
-        if: steps.prepare.outputs.status == 'no-update' || steps.prepare.outputs.status == 'candidate-ready'
+        if: |
+          steps.suppression.outputs.status == 'no-update' ||
+          steps.suppression.outputs.status == 'candidate-ready' ||
+          steps.suppression.outputs.status == 'failed-candidate-suppressed'
         with:
           name: coworkers-status-${{ github.run_id }}
           path: .sync-result
@@ -119,6 +146,9 @@ jobs:
           script: |
             const issue = Number(process.env.ISSUE)
             if (!issue) throw new Error("COWORKERS_UPDATE_ISSUE_NUMBER repository variable is required")
+            const marker = process.env.UPSTREAM
+              ? `<!-- coworkers-upstream-failure:${process.env.UPSTREAM} -->`
+              : null
             const body = [
               "### Coworkers upstream sync failed",
               `- Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
@@ -127,6 +157,13 @@ jobs:
               `- Reason: ${process.env.REASON || "Tests, build, or artifact validation failed"}`,
               "",
               "Production was not changed by this workflow.",
+              ...(marker
+                ? [
+                    "",
+                    "Scheduled runs for this upstream SHA are suppressed until a manual retry.",
+                    marker,
+                  ]
+                : []),
             ].join("\n")
             await github.rest.issues.createComment({
               owner: context.repo.owner,

@@ -27,6 +27,7 @@ jobs:
     outputs:
       status: ${{ steps.status.outputs.status }}
       head_sha: ${{ steps.provenance.outputs.head_sha }}
+      upstream_sha: ${{ steps.status.outputs.upstream_sha }}
     env:
       SYNC_RUN_ID: ${{ github.event.workflow_run.id || inputs.run_id }}
     steps:
@@ -62,8 +63,13 @@ jobs:
         id: status
         run: |
           status="$(jq -r .status /tmp/sync-status/status.json)"
+          upstream="$(jq -r '.upstream_sha // ""' /tmp/sync-status/status.json)"
           echo "status=$status" >> "$GITHUB_OUTPUT"
-          test "$status" = "candidate-ready" || test "$status" = "no-update"
+          echo "upstream_sha=$upstream" >> "$GITHUB_OUTPUT"
+          case "$status" in
+            candidate-ready|no-update|failed-candidate-suppressed) ;;
+            *) echo "unexpected sync status: $status" >&2; exit 1 ;;
+          esac
 
   deploy:
     if: needs.preflight.outputs.status == 'candidate-ready'
@@ -163,10 +169,14 @@ jobs:
       - uses: actions/github-script@v7
         env:
           ISSUE: ${{ vars.COWORKERS_UPDATE_ISSUE_NUMBER }}
+          UPSTREAM: ${{ needs.preflight.outputs.upstream_sha }}
         with:
           script: |
             const issue = Number(process.env.ISSUE)
             if (!issue) throw new Error("COWORKERS_UPDATE_ISSUE_NUMBER repository variable is required")
+            const marker = process.env.UPSTREAM
+              ? `<!-- coworkers-upstream-failure:${process.env.UPSTREAM} -->`
+              : null
             const body = [
               "### Coworkers automated deploy failed",
               `- Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
@@ -175,6 +185,13 @@ jobs:
               "- If live version changed during a failed release, automatic retry is disabled and manual reconciliation is required.",
               "",
               "No automatic rollback was attempted.",
+              ...(marker
+                ? [
+                    "",
+                    "Scheduled sync runs for this upstream SHA are suppressed until a manual retry.",
+                    marker,
+                  ]
+                : []),
             ].join("\n")
             await github.rest.issues.createComment({
               owner: context.repo.owner,

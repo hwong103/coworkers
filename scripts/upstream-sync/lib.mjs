@@ -5,6 +5,7 @@ import { join, relative, resolve } from "node:path"
 
 export const PROTECTED_PREFIXES = [
   ".github/",
+  "src/agents/",
   "scripts/upstream-sync/",
   "docs/upstream-auto-deploy.md",
 ]
@@ -48,17 +49,6 @@ export const SECURITY_PATHS = new Set([
   "src/routes/api/hooks.$userId.$botId.$token.ts",
 ])
 
-const STATE_RE = [
-  /CREATE\s+(?:UNIQUE\s+)?(?:TABLE|INDEX)/i,
-  /ALTER\s+TABLE/i,
-  /DROP\s+(?:TABLE|INDEX)/i,
-  /PRAGMA\s+(?:user_version|journal_mode)/i,
-  /\b(?:ctx\.)?storage\.(?:sql|exec|transaction|put|delete|list)\b/i,
-  /\bblockConcurrencyWhile\b/i,
-  /\binitialState\b/i,
-  /\bvalidateStateChange\b/i,
-]
-
 export function git(args, cwd, options = {}) {
   return execFileSync("git", args, {
     cwd,
@@ -92,26 +82,8 @@ export function isProtectedPath(path) {
 }
 
 export function sensitiveChangeReason(path, cwd, base, target) {
-  if (isProtectedPath(path)) return `protected or production-sensitive path: ${path}`
-  if (!path.startsWith("src/agents/") || !path.endsWith(".ts")) return null
-
-  const diff = git(
-    ["diff", "--unified=0", "--no-color", base, target, "--", path],
-    cwd,
-  )
-  const changedLines = diff
-    .split("\n")
-    .filter(
-      (line) =>
-        (line.startsWith("+") || line.startsWith("-")) &&
-        !line.startsWith("+++") &&
-        !line.startsWith("---"),
-    )
-  for (const line of changedLines) {
-    if (STATE_RE.some((re) => re.test(line))) {
-      return `possible schema/storage initialization change in ${path}: ${line.slice(1).trim()}`
-    }
-  }
+  if (isProtectedPath(path))
+    return `protected or production-sensitive path: ${path}`
   return null
 }
 
@@ -135,7 +107,7 @@ export function assertPersonalInvariants(root) {
   }
   if (
     !/EMAIL_ROUTING_API_TOKEN:\s*EMAIL_ROUTING_MANAGED[\s\S]{0,120}bindings\.secret\(\)/.test(
-      config,
+      config
     )
   ) {
     errors.push("email routing token conditional is missing")
@@ -167,7 +139,8 @@ export function hashTree(root) {
     for (const name of readdirSync(dir).sort()) {
       const path = join(dir, name)
       const stat = lstatSync(path)
-      if (stat.isSymbolicLink()) throw new Error(`symlink is not allowed: ${path}`)
+      if (stat.isSymbolicLink())
+        throw new Error(`symlink is not allowed: ${path}`)
       if (stat.isDirectory()) visit(path)
       else if (stat.isFile()) {
         hash.update(relative(root, path).split("\\").join("/"))
@@ -197,7 +170,9 @@ export function latestDeploymentId(deployments) {
   if (!latest) throw new Error("cf returned no Worker deployments")
   const versions = latest.versions ?? []
   if (versions.length !== 1 || Number(versions[0].percentage) !== 100) {
-    throw new Error("latest deployment is not a single 100% version; automatic deploy stopped")
+    throw new Error(
+      "latest deployment is not a single 100% version; automatic deploy stopped"
+    )
   }
   const id = versions[0].version_id ?? versions[0].versionId
   if (!id) throw new Error("latest deployment has no version ID")
@@ -230,11 +205,13 @@ export async function deployWithOneRecoveryAttempt({
   const afterFirst = await readLiveVersion()
   if (!firstError) {
     if (afterFirst !== expectedVersionId) return { attempts: 1 }
-    throw new Error("deploy command succeeded but live deployment did not change")
+    throw new Error(
+      "deploy command succeeded but live deployment did not change"
+    )
   }
   if (afterFirst !== expectedVersionId) {
     throw new Error(
-      `deploy failed and live version may have changed; no retry: ${firstError?.message ?? "unknown error"}`,
+      `deploy failed and live version may have changed; no retry: ${firstError?.message ?? "unknown error"}`
     )
   }
 
@@ -244,7 +221,7 @@ export async function deployWithOneRecoveryAttempt({
   } catch (error) {
     const afterSecond = await readLiveVersion()
     throw new Error(
-      `deploy failed after retry; live ${afterSecond === expectedVersionId ? "is unchanged" : "may have changed"}: ${error.message}`,
+      `deploy failed after retry; live ${afterSecond === expectedVersionId ? "is unchanged" : "may have changed"}: ${error.message}`
     )
   }
   return { attempts: 2, firstError: firstError?.message }

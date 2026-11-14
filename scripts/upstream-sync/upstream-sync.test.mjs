@@ -37,7 +37,7 @@ test("no update exits without a candidate", () => {
       execFileSync("git", ["merge-base", "--is-ancestor", base, "HEAD"], {
         cwd: dir,
         stdio: "ignore",
-      }),
+      })
     )
   } finally {
     rmSync(dir, { recursive: true, force: true })
@@ -59,7 +59,7 @@ test("normal upstream update merges cleanly", () => {
       execFileSync("git", ["merge-base", "--is-ancestor", upstream, "HEAD"], {
         cwd: dir,
         stdio: "ignore",
-      }),
+      })
     )
   } finally {
     rmSync(dir, { recursive: true, force: true })
@@ -92,8 +92,41 @@ test("sensitive dependency changes are rejected", () => {
     const base = commit(dir, "base")
     writeFileSync(join(dir, "package.json"), '{"dependencies":{"x":"1"}}\n')
     const upstream = commit(dir, "upstream dependency")
-    assert.match(inspectChangeSet(dir, base, upstream).blockers.join("\n"), /package\.json/)
+    assert.match(
+      inspectChangeSet(dir, base, upstream).blockers.join("\n"),
+      /package\.json/
+    )
     assert.equal(isProtectedPath("pnpm-lock.yaml"), true)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("all stateful agent source changes are rejected", () => {
+  const dir = repo()
+  try {
+    mkdirSync(join(dir, "src/agents"), { recursive: true })
+    writeFileSync(
+      join(dir, "src/agents/example.ts"),
+      "export const value = 1\n"
+    )
+    const base = commit(dir, "base")
+    writeFileSync(
+      join(dir, "src/agents/example.ts"),
+      [
+        "export function change(ctx) {",
+        '  ctx.storage.sql.exec("DELETE FROM items")',
+        '  ctx.storage.sql.exec("UPDATE items SET value = 2")',
+        "  this.sql`SELECT 1`",
+        "}",
+        "",
+      ].join("\n")
+    )
+    const upstream = commit(dir, "stateful agent change")
+    assert.match(
+      inspectChangeSet(dir, base, upstream).blockers.join("\n"),
+      /protected or production-sensitive path: src\/agents\/example\.ts/
+    )
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -130,7 +163,7 @@ test("partial live change prevents an automatic retry", async () => {
       readLiveVersion: async () => live,
       sleep: async () => {},
     }),
-    /may have changed; no retry/,
+    /may have changed; no retry/
   )
   assert.equal(attempts, 1)
 })
@@ -146,7 +179,7 @@ test("a successful command with unchanged live state is not replayed", async () 
       readLiveVersion: async () => "version-1",
       sleep: async () => {},
     }),
-    /succeeded but live deployment did not change/,
+    /succeeded but live deployment did not change/
   )
   assert.equal(attempts, 1)
 })

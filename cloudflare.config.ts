@@ -26,6 +26,9 @@ const deploy: Partial<{
     : {}
 
 const WORKER_NAME = deploy.name ?? "coworkers"
+const EMAIL_ROUTING_MANAGED = Boolean(
+  deploy.emailDomain?.trim() && deploy.emailZoneId?.trim()
+)
 
 /**
  * Cloudflare project config, read by the `cf` CLI and the Cloudflare Vite
@@ -141,7 +144,12 @@ export default defineConfig({
       // zone for a subdomain); the token needs "Email Routing Rules: Edit"
       // on it. Without them, route the domain with a catch-all yourself.
       EMAIL_ZONE_ID: bindings.text(deploy.emailZoneId ?? ""),
-      EMAIL_ROUTING_API_TOKEN: bindings.secret(),
+      // `cf` has no optional-secret binding. Keep the token required only when
+      // automatic routing is requested; an empty text binding keeps email off
+      // without asking every deployment for a secret it cannot use.
+      EMAIL_ROUTING_API_TOKEN: EMAIL_ROUTING_MANAGED
+        ? bindings.secret()
+        : bindings.text(""),
       // Sends the mail bots write (send_email, reply_email) from their own
       // address. The sending domain must be onboarded for Email Sending.
       SEND_EMAIL: bindings.sendEmail({}),

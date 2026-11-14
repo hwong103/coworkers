@@ -248,8 +248,6 @@ export class UserHub extends Agent<Env, HubState> implements HubPort {
       data TEXT NOT NULL,
       checked_at INTEGER NOT NULL
     )`
-    // Google sign-in was removed; drop any client secret a hub still holds.
-    this.sql`DROP TABLE IF EXISTS google_client`
     this.refreshDesk()
     await this.startSpend()
     // After an MCP sign-in completes, send the user back to Connections.

@@ -10,6 +10,9 @@ import {
   UPDATE_AFTER_MS,
   WRAP_UP_AFTER_MS,
   MAX_TOOL_RESULT_CHARS,
+  boundModelHistory,
+  modelHistoryByteBudget,
+  prepareModelHistory,
   shapeToolResults,
   stableJson,
 } from "./guards"
@@ -66,6 +69,89 @@ function outputOf(message: ModelMessage) {
   return (message.content as { output: { type: string; value: unknown } }[])[0]
     .output
 }
+
+function user(text: string): ModelMessage {
+  return { role: "user", content: text }
+}
+
+function toolCall(id: string): ModelMessage {
+  return {
+    role: "assistant",
+    content: [
+      {
+        type: "tool-call",
+        toolCallId: id,
+        toolName: "lookup",
+        input: { id },
+      },
+    ],
+  }
+}
+
+describe("boundModelHistory", () => {
+  it("drops only older complete user turns", () => {
+    const messages: ModelMessage[] = [
+      user("old request ".repeat(500)),
+      toolCall("old-call"),
+      toolMessage("lookup", { type: "json", value: {} }, "old-call"),
+      { role: "assistant", content: "old answer ".repeat(500) },
+      user("recent request"),
+      toolCall("recent-call"),
+      toolMessage("lookup", { type: "json", value: {} }, "recent-call"),
+      { role: "assistant", content: "recent answer" },
+    ]
+
+    const bounded = boundModelHistory(messages, 1_000)
+
+    expect(bounded.messages).toEqual(messages.slice(4))
+    expect(bounded.messages[0].role).toBe("user")
+    expect(bounded.omittedMessages).toBe(4)
+  })
+
+  it("keeps an oversized newest turn whole so the caller can fail clearly", () => {
+    const newestTurn: ModelMessage[] = [
+      user("new request ".repeat(500)),
+      toolCall("new-call"),
+      toolMessage("lookup", { type: "json", value: {} }, "new-call"),
+    ]
+    const bounded = boundModelHistory(
+      [user("old request ".repeat(500)), ...newestTurn],
+      100
+    )
+
+    expect(bounded.messages).toEqual(newestTurn)
+    expect(bounded.bytes).toBeGreaterThan(100)
+    expect(bounded.omittedMessages).toBe(1)
+  })
+})
+
+describe("modelHistoryByteBudget", () => {
+  it("reserves provider headroom after counting the fixed prompt", () => {
+    expect(modelHistoryByteBudget(200_000, 20_000)).toBe(160_000)
+  })
+})
+
+describe("prepareModelHistory", () => {
+  it("caps a huge newest tool result before deciding it is over budget", () => {
+    const messages: ModelMessage[] = [
+      user("read the generated report"),
+      toolMessage(
+        "exec",
+        {
+          type: "text",
+          value: "x".repeat(1_000_000),
+        },
+        "large-result"
+      ),
+    ]
+
+    const prepared = prepareModelHistory(messages, 20_000)
+
+    expect(prepared.omittedMessages).toBe(0)
+    expect(prepared.bytes).toBeLessThanOrEqual(20_000)
+    expect(String(outputOf(prepared.messages[1]).value)).toMatch(/Truncated/)
+  })
+})
 
 describe("shapeToolResults", () => {
   it("returns null when nothing needs changing", () => {

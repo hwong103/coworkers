@@ -154,11 +154,17 @@ import type {
   Caller,
   HubPort,
 } from "@/control/operation"
-import { LoopGuard, TurnBudget, shapeToolResults } from "./guards"
+import {
+  LoopGuard,
+  TurnBudget,
+  modelHistoryByteBudget,
+  prepareModelHistory,
+  serializedBytes,
+} from "./guards"
 import { failureCard, replyCard, scriptCard, waitingCard } from "./desk"
 import type { DemoBotSeed } from "./demo-seed"
 import { MAX_MEMORY_CHARS, appendFact } from "./memory"
-import { languageModel, pickModel } from "./models"
+import { languageModel, modelContextTokens, pickModel } from "./models"
 import {
   MAX_SECRET_RESPONSE_CHARS,
   SECRET_REQUEST_TIMEOUT_MS,
@@ -1180,22 +1186,21 @@ export class BotAgent extends Think<Env, BotState> {
 
   /** The account's model choice, as of this bot's latest turn. */
   #models?: ModelSettings
+  /** Set once in beforeTurn and reused as tool results grow within the turn. */
+  #historyBudget = Number.POSITIVE_INFINITY
 
   override getModel() {
     return this.modelFor(false)
   }
 
-  /**
-   * Background turns (routines, check-ins, email) can run on a cheaper model
-   * than chat, so a strong interactive model does not run up the bill on
-   * every scheduled check.
-   */
-  private turnModel() {
-    return this.modelFor(this.isBackgroundTurn())
+  private turnModelId(background = this.isBackgroundTurn()) {
+    return pickModel(this.env, this.#models, this.state.model, background)
   }
 
-  private modelFor(background: boolean) {
-    const id = pickModel(this.env, this.#models, this.state.model, background)
+  private modelFor(
+    background: boolean,
+    id = pickModel(this.env, this.#models, this.state.model, background)
+  ) {
     return languageModel(this.env, id, {
       settings: this.#models,
       // Shown on each AI Gateway log entry.
@@ -1312,10 +1317,20 @@ export class BotAgent extends Think<Env, BotState> {
         collections: this.apps.collections(app.slug),
       })),
     })
-    return {
-      model: this.turnModel(),
-      instructions: `${system}\n\n${context}`,
-      messages: withSentTimes(
+    const background = this.isBackgroundTurn()
+    const modelId = this.turnModelId(background)
+    const instructionsPrefix = `${system}\n\n${context}`
+    const contextTokens = modelContextTokens(this.env, modelId, this.#models)
+    const fixedPromptBytes =
+      serializedBytes(instructionsPrefix) +
+      serializedBytes({ ...ctx.tools, ...this.#appTools })
+    const historyBudget = modelHistoryByteBudget(
+      contextTokens,
+      fixedPromptBytes
+    )
+    this.#historyBudget = historyBudget
+    const history = prepareModelHistory(
+      withSentTimes(
         ctx.messages,
         this.messages.filter((m) => m.role === "user").map((m) => metaOf(m).at),
         this.state.proactive.timezone,
@@ -1326,6 +1341,21 @@ export class BotAgent extends Think<Env, BotState> {
             return pick ? pickNote(pick) : undefined
           })
       ),
+      historyBudget
+    )
+    if (history.bytes > historyBudget) {
+      throw new Error(
+        "This request is too large for the selected model, even after omitting older conversation. Nothing was deleted. Shorten or split the latest message, or reduce connected app tools."
+      )
+    }
+    const historyNote =
+      history.omittedMessages > 0
+        ? `\n\n# Older conversation\nThe oldest ${history.omittedMessages} messages were omitted from this request to fit the model context window. They remain stored. Use history-search tools when available if exact older details matter.`
+        : ""
+    return {
+      model: this.modelFor(background, modelId),
+      instructions: `${instructionsPrefix}${historyNote}`,
+      messages: history.messages,
       tools: this.#appTools,
     }
   }
@@ -4294,10 +4324,14 @@ export class BotAgent extends Think<Env, BotState> {
 
   /** Keep long turns inside the context window (see shapeToolResults). */
   override beforeStep(ctx: PrepareStepContext): StepConfig | void {
-    const shaped = shapeToolResults(ctx.messages)
+    const history = prepareModelHistory(ctx.messages, this.#historyBudget)
+    if (history.bytes > this.#historyBudget) {
+      throw new Error(
+        "This request is too large for the selected model, even after omitting older conversation and shortening tool results. Nothing was deleted. Shorten or split the latest message, or reduce connected app tools."
+      )
+    }
     const nudge = this.paceStep(ctx)
-    if (!shaped && !nudge) return
-    const messages = [...(shaped ?? ctx.messages)]
+    const messages = [...history.messages]
     if (nudge) {
       messages.push({ role: "user", content: nudge.note })
     }

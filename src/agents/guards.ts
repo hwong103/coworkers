@@ -136,6 +136,89 @@ const PAGE_TOOLS = new Set([
 
 type ToolOutput = ToolResultPart["output"]
 
+/**
+ * Count a byte as a token. This is deliberately more conservative than normal
+ * BPE tokenizers, and leaves room for provider wrappers and multimodal input
+ * whose token cost is not represented faithfully by JSON bytes.
+ */
+export const PROMPT_CONTEXT_RESERVE_SHARE = 0.1
+export const MIN_PROMPT_CONTEXT_RESERVE_BYTES = 16_000
+
+export function serializedBytes(value: unknown) {
+  return new TextEncoder().encode(JSON.stringify(value) ?? "").byteLength
+}
+
+export function modelHistoryByteBudget(
+  contextTokens: number,
+  fixedPromptBytes = 0
+) {
+  if (!Number.isFinite(contextTokens) || contextTokens <= 0) return 0
+  const reserve = Math.max(
+    MIN_PROMPT_CONTEXT_RESERVE_BYTES,
+    Math.floor(contextTokens * PROMPT_CONTEXT_RESERVE_SHARE)
+  )
+  return Math.max(1, contextTokens - reserve - Math.max(0, fixedPromptBytes))
+}
+
+export interface BoundedModelHistory {
+  messages: ModelMessage[]
+  bytes: number
+  omittedMessages: number
+}
+
+/**
+ * Keep a byte-bounded suffix of provider-ready history. A cut is only made at
+ * a user-message boundary, so an assistant tool call and its tool results stay
+ * together. The newest user turn is always kept whole even when it alone
+ * exceeds the budget; stored history is never changed.
+ */
+export function boundModelHistory(
+  messages: ModelMessage[],
+  maxBytes: number
+): BoundedModelHistory {
+  const sizes = messages.map(serializedBytes)
+  const prefix = [0]
+  for (const size of sizes) prefix.push(prefix.at(-1)! + size)
+  const totalBytes = prefix.at(-1)!
+  if (totalBytes <= maxBytes) {
+    return { messages, bytes: totalBytes, omittedMessages: 0 }
+  }
+
+  const userStarts = messages.flatMap((message, index) =>
+    message.role === "user" ? [index] : []
+  )
+  let start = userStarts.at(-1) ?? messages.length - 1
+  let keptBytes = totalBytes - prefix[start]
+  for (let i = userStarts.length - 2; i >= 0; i--) {
+    const candidate = userStarts[i]
+    const groupBytes = prefix[start] - prefix[candidate]
+    if (keptBytes + groupBytes > maxBytes) break
+    start = candidate
+    keptBytes += groupBytes
+  }
+
+  // A valid history normally starts with a user turn. For tool-only histories,
+  // move back over the result rows so the first row is not an orphaned result.
+  if (!userStarts.length) {
+    while (start > 0 && messages[start].role === "tool") start--
+  }
+
+  return {
+    messages: messages.slice(start),
+    bytes: totalBytes - prefix[start],
+    omittedMessages: start,
+  }
+}
+
+/** Shape oversized results before measuring so their capped size is budgeted. */
+export function prepareModelHistory(
+  messages: ModelMessage[],
+  maxBytes: number
+): BoundedModelHistory {
+  const shaped = shapeToolResults(messages)
+  return boundModelHistory(shaped ?? messages, maxBytes)
+}
+
 function outputText(output: ToolOutput): string | null {
   switch (output.type) {
     case "text":

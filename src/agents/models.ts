@@ -1,12 +1,18 @@
 import { createAI } from "agents/models/ai-sdk"
 import type { CloudflareLanguageModelId } from "agents/models/ai-sdk"
-import { DEFAULT_MODEL_SETTINGS, providerOf } from "@/lib/models"
+import { DEFAULT_MODEL_SETTINGS, modelInfo, providerOf } from "@/lib/models"
 import type { DeploymentModels, ModelSettings } from "@/lib/models"
 
-type ModelEnv = Pick<
-  Env,
-  "AI" | "AI_GATEWAY_ID" | "MODEL" | "BACKGROUND_MODEL" | "FALLBACK_MODEL"
->
+type ModelEnv = {
+  AI: Env["AI"]
+  AI_GATEWAY_ID?: string | null
+  MODEL: string
+  BACKGROUND_MODEL?: string | null
+  FALLBACK_MODEL?: string | null
+}
+
+/** Never assume an unknown custom model has more context than our smallest. */
+const UNKNOWN_MODEL_CONTEXT = 128_000
 
 /** The gateway every model call goes through. "default" is auto-created. */
 export function gatewayId(env: ModelEnv) {
@@ -20,6 +26,34 @@ export function deploymentModels(env: ModelEnv): DeploymentModels {
     fallback: env.FALLBACK_MODEL?.trim() || null,
     gateway: gatewayId(env),
   }
+}
+
+function fallbackModelId(
+  env: ModelEnv,
+  modelId: string,
+  settings: ModelSettings
+) {
+  const safety = env.FALLBACK_MODEL?.trim() ?? ""
+  return settings.fallback &&
+    providerOf(modelId) !== "workers-ai" &&
+    providerOf(safety) === "workers-ai" &&
+    safety !== modelId
+    ? safety
+    : null
+}
+
+/** The smaller context of the primary and any configured fallback model. */
+export function modelContextTokens(
+  env: ModelEnv,
+  modelId: string,
+  settings: ModelSettings = DEFAULT_MODEL_SETTINGS
+) {
+  const fallback = fallbackModelId(env, modelId, settings)
+  return Math.min(
+    ...(fallback ? [modelId, fallback] : [modelId]).map(
+      (id) => modelInfo(id)?.context ?? UNKNOWN_MODEL_CONTEXT
+    )
+  )
 }
 
 /**
@@ -57,14 +91,8 @@ export function languageModel(
 ) {
   const ai = createAI({ binding: env.AI, gateway: gatewayId(env) })
   const settings = options.settings ?? DEFAULT_MODEL_SETTINGS
-  const safety = env.FALLBACK_MODEL?.trim() ?? ""
-  const fallback =
-    settings.fallback &&
-    providerOf(modelId) !== "workers-ai" &&
-    providerOf(safety) === "workers-ai" &&
-    safety !== modelId
-      ? [safety as CloudflareLanguageModelId]
-      : undefined
+  const safety = fallbackModelId(env, modelId, settings)
+  const fallback = safety ? [safety as CloudflareLanguageModelId] : undefined
   return ai(modelId as CloudflareLanguageModelId, {
     ...(fallback ? { fallback } : {}),
     ...(options.metadata ? { metadata: options.metadata } : {}),

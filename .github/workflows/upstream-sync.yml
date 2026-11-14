@@ -28,13 +28,6 @@ jobs:
           ref: main
           fetch-depth: 0
           persist-credentials: false
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 11.9.0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: pnpm
       - name: Configure Git identity
         run: |
           git config user.name "github-actions[bot]"
@@ -62,6 +55,15 @@ jobs:
           steps.suppression.outputs.status != 'no-update' &&
           steps.suppression.outputs.status != 'failed-candidate-suppressed'
         run: exit 1
+      - uses: pnpm/action-setup@v4
+        if: steps.suppression.outputs.status == 'candidate-ready'
+        with:
+          version: 11.9.0
+      - uses: actions/setup-node@v4
+        if: steps.suppression.outputs.status == 'candidate-ready'
+        with:
+          node-version: 24
+          cache: pnpm
       - run: pnpm install --frozen-lockfile
         if: steps.suppression.outputs.status == 'candidate-ready'
       - run: pnpm test

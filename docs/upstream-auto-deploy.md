@@ -12,6 +12,13 @@ Upstream updates are split across two runners:
    Candidate dependencies, scripts, and configuration are never executed with
    that token.
 
+The artifact includes a Git bundle containing the two-parent merge commit.
+Deployment verifies the sync run belongs to this repository, ran from `main`
+at the checked-out commit, and succeeded from the expected workflow path. It
+then verifies the candidate parents are exactly the trusted base and fetched
+upstream commit. Artifact hashes provide integrity only; run provenance and
+Git ancestry establish origin.
+
 `main` is advanced only after a release succeeds. A failed release is retried
 once only when the live Worker version is still unchanged. If the live version
 changed during a failed release, automation stops for manual reconciliation.

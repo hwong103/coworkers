@@ -52,7 +52,7 @@ jobs:
         if: steps.prepare.outputs.status == 'candidate-ready'
       - run: pnpm test
         if: steps.prepare.outputs.status == 'candidate-ready'
-      - run: node --test scripts/upstream-sync/upstream-sync.test.mjs
+      - run: node --test scripts/upstream-sync/*.test.mjs
         if: steps.prepare.outputs.status == 'candidate-ready'
       - run: pnpm typecheck
         if: steps.prepare.outputs.status == 'candidate-ready'

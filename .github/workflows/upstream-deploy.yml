@@ -26,9 +26,32 @@ jobs:
     timeout-minutes: 5
     outputs:
       status: ${{ steps.status.outputs.status }}
+      head_sha: ${{ steps.provenance.outputs.head_sha }}
     env:
       SYNC_RUN_ID: ${{ github.event.workflow_run.id || inputs.run_id }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify sync run provenance
+        id: provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          head_sha="$(git rev-parse HEAD)"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SYNC_RUN_ID" > /tmp/sync-run.json
+          jq -e --arg repo "$GITHUB_REPOSITORY" --arg head "$head_sha" '
+            .repository.full_name == $repo and
+            .head_repository.full_name == $repo and
+            .path == ".github/workflows/upstream-sync.yml" and
+            .head_branch == "main" and
+            .head_sha == $head and
+            .conclusion == "success" and
+            (.event == "schedule" or .event == "workflow_dispatch")
+          ' /tmp/sync-run.json >/dev/null
+          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@v4
         with:
           name: coworkers-status-${{ env.SYNC_RUN_ID }}
@@ -50,6 +73,7 @@ jobs:
     environment: coworkers-production
     env:
       SYNC_RUN_ID: ${{ github.event.workflow_run.id || inputs.run_id }}
+      TRUSTED_HEAD_SHA: ${{ needs.preflight.outputs.head_sha }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -62,6 +86,12 @@ jobs:
           path: /tmp/upstream-artifact
           run-id: ${{ env.SYNC_RUN_ID }}
           github-token: ${{ github.token }}
+      - name: Verify main did not move
+        run: test "$(git rev-parse HEAD)" = "$TRUSTED_HEAD_SHA"
+      - name: Configure trusted Git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
       - name: Validate artifact from trusted policy
         env:
           ARTIFACT_DIR: /tmp/upstream-artifact
@@ -71,11 +101,17 @@ jobs:
         run: node scripts/upstream-sync/validate-artifact.mjs
       - name: Install exact CF uploader
         run: npm install --global --ignore-scripts cf@1.0.0-beta.6
-      - name: Preflight candidate patch
+      - name: Verify candidate merge ancestry
         env:
           ARTIFACT_DIR: /tmp/upstream-artifact
         run: |
           git apply --check "$ARTIFACT_DIR/candidate.patch"
+          git fetch "$ARTIFACT_DIR/candidate.bundle" refs/heads/upstream-candidate:refs/remotes/upstream-candidate
+          candidate="$(git rev-parse refs/remotes/upstream-candidate)"
+          test "$(jq -r .candidate_sha "$ARTIFACT_DIR/metadata.json")" = "$candidate"
+          test "$(git rev-parse "$candidate^1")" = "$(jq -r .base_sha "$ARTIFACT_DIR/metadata.json")"
+          test "$(git rev-parse "$candidate^2")" = "$(jq -r .upstream_sha "$ARTIFACT_DIR/metadata.json")"
+          test "$(git rev-list --parents -n 1 "$candidate" | wc -w)" = "3"
       - name: Deploy validated artifact
         env:
           ARTIFACT_DIR: /tmp/upstream-artifact

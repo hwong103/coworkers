@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process"
-import { readFileSync } from "node:fs"
-import { dirname, join, resolve } from "node:path"
+import { lstatSync, readFileSync, readdirSync } from "node:fs"
+import { dirname, join, relative, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { hashTree, isProtectedPath, sha256File } from "./lib.mjs"
 
@@ -49,7 +49,13 @@ if (!/^[0-9a-f]{32}$/.test(expectedAccount)) {
   fail("account ID must be 32 lowercase hex characters")
 }
 if (metadata.schemaVersion !== 1) fail("unknown metadata schema")
-for (const key of ["base_sha", "upstream_sha", "candidate_sha", "patch_sha256"]) {
+for (const key of [
+  "base_sha",
+  "upstream_sha",
+  "candidate_sha",
+  "patch_sha256",
+  "bundle_sha256",
+]) {
   if (!metadata[key]) fail(`metadata.${key} is missing`)
 }
 equal(
@@ -70,6 +76,20 @@ equal(
   metadata.patch_sha256,
   "candidate patch digest",
 )
+equal(
+  sha256File(join(artifact, "candidate.bundle")),
+  metadata.bundle_sha256,
+  "candidate bundle digest",
+)
+const bundleHead = execFileSync(
+  "git",
+  ["bundle", "list-heads", join(artifact, "candidate.bundle")],
+  { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+)
+  .trim()
+  .split("\n")[0]
+  ?.split(/\s+/)[0]
+equal(bundleHead, metadata.candidate_sha, "candidate bundle head")
 const patchPaths = execFileSync(
   "git",
   ["apply", "--numstat", join(artifact, "candidate.patch")],
@@ -86,6 +106,26 @@ for (const path of patchPaths) {
 const config = JSON.parse(readFileSync(join(output, "v0/config.json"), "utf8"))
 const worker = JSON.parse(
   readFileSync(join(output, "v0/workers/default/worker.config.json"), "utf8"),
+)
+equal(Object.keys(config).sort(), ["buildContext"], "root config keys")
+equal(
+  Object.keys(config.buildContext ?? {}).sort(),
+  ["isPreview", "mode"],
+  "build context keys",
+)
+equal(
+  Object.keys(worker).sort(),
+  [
+    "compatibilityDate",
+    "compatibilityFlags",
+    "env",
+    "exports",
+    "manifest",
+    "name",
+    "observability",
+    "previewUrls",
+  ],
+  "worker config keys",
 )
 for (const [label, value] of [
   ["config", config],
@@ -120,8 +160,39 @@ const secrets = Object.entries(worker.env)
 equal(secrets, [...policy.secretBindings].sort(), "secret binding names")
 
 const main = worker.manifest?.mainModule
-if (!main || main.startsWith("/") || main.includes("..")) {
-  fail("unsafe main module path")
+if (main !== "index.js") fail("unsafe main module path")
+
+const outputRoot = resolve(output)
+const allowedFile = (path) =>
+  path === "v0/config.json" ||
+  path === "v0/workers/default/worker.config.json" ||
+  path.startsWith("v0/workers/default/assets/") ||
+  path.startsWith("v0/workers/default/bundle/")
+const visit = (dir) => {
+  for (const name of readdirSync(dir)) {
+    const path = join(dir, name)
+    const stat = lstatSync(path)
+    if (stat.isSymbolicLink()) fail(`symlink in output: ${path}`)
+    if (stat.isDirectory()) visit(path)
+    else {
+      const rel = relative(outputRoot, path).split("\\").join("/")
+      if (!allowedFile(rel)) fail(`unexpected output file: ${rel}`)
+      const absolute = resolve(outputRoot, rel)
+      if (!absolute.startsWith(`${outputRoot}/`)) fail(`path escaped output: ${rel}`)
+    }
+  }
+}
+visit(outputRoot)
+for (const modulePath of Object.keys(worker.manifest?.modules ?? {})) {
+  const absolute = resolve(outputRoot, "v0/workers/default/bundle", modulePath)
+  if (!absolute.startsWith(`${outputRoot}/v0/workers/default/bundle/`)) {
+    fail(`manifest module escaped bundle: ${modulePath}`)
+  }
+  try {
+    readFileSync(absolute)
+  } catch {
+    fail(`manifest module is missing: ${modulePath}`)
+  }
 }
 
 console.log(

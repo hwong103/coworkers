@@ -29,6 +29,29 @@ const patch = execFileSync("git", ["diff", "--binary", base, candidate], {
 })
 if (patch.length === 0) throw new Error("candidate patch is empty")
 writeFileSync(join(artifact, "candidate.patch"), patch)
+execFileSync(
+  "git",
+  ["update-ref", "refs/heads/upstream-candidate", candidate],
+  { cwd: root },
+)
+try {
+  execFileSync(
+    "git",
+    [
+      "bundle",
+      "create",
+      join(artifact, "candidate.bundle"),
+      `${base}..refs/heads/upstream-candidate`,
+    ],
+    { cwd: root, stdio: "inherit" },
+  )
+} finally {
+  execFileSync(
+    "git",
+    ["update-ref", "-d", "refs/heads/upstream-candidate"],
+    { cwd: root },
+  )
+}
 cpSync(join(root, ".cloudflare/output"), join(artifact, "output"), {
   recursive: true,
   dereference: false,
@@ -40,6 +63,7 @@ const metadata = {
   upstream_sha: upstream,
   candidate_sha: candidate,
   patch_sha256: sha256File(join(artifact, "candidate.patch")),
+  bundle_sha256: sha256File(join(artifact, "candidate.bundle")),
   output_sha256: hashTree(join(artifact, "output")),
   expected: {
     account_id: process.env.COWORKERS_ACCOUNT_ID,

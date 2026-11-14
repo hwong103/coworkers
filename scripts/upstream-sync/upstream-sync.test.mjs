@@ -55,6 +55,12 @@ test("normal upstream update merges cleanly", () => {
     git(dir, "checkout", "main")
     git(dir, "merge", "--no-ff", "--no-edit", upstream)
     assert.deepEqual(inspectChangeSet(dir, base, "HEAD").blockers, [])
+    assert.doesNotThrow(() =>
+      execFileSync("git", ["merge-base", "--is-ancestor", upstream, "HEAD"], {
+        cwd: dir,
+        stdio: "ignore",
+      }),
+    )
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

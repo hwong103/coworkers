@@ -14,8 +14,11 @@ export const PROTECTED_EXACT = new Set([
   "pnpm-workspace.yaml",
   "package.json",
   "pnpm-lock.yaml",
+  "cloudflare.config.ts",
+  "scripts/setup.ts",
   "installer/package.json",
   "installer/cloudflare.config.ts",
+  "installer/src/installer.ts",
   "vite.config.ts",
   "vitest.config.ts",
   "tsconfig.json",
@@ -25,6 +28,7 @@ export const PROTECTED_EXACT = new Set([
 ])
 
 export const PROTECTED_PREFIXES_DEPENDENCY = [
+  "installer/src/deploy/",
   "drizzle/",
   "migrations/",
   "schema/",

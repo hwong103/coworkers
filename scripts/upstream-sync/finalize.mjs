@@ -1,32 +1,34 @@
 import { execFileSync } from "node:child_process"
 import { readFileSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
-import { isProtectedPath } from "./lib.mjs"
 
 const root = process.cwd()
 const artifact = resolve(process.env.ARTIFACT_DIR ?? join(root, ".upstream-artifact"))
 const metadata = JSON.parse(readFileSync(join(artifact, "metadata.json"), "utf8"))
 const result = JSON.parse(readFileSync(join(artifact, "deployment-result.json"), "utf8"))
-const patch = join(artifact, "candidate.patch")
 const statePath = join(root, ".github/upstream-sync/deployment-state.json")
 
-const numeric = execFileSync("git", ["apply", "--numstat", patch], {
+const current = execFileSync("git", ["rev-parse", "HEAD"], {
   cwd: root,
   encoding: "utf8",
-})
-const paths = numeric
-  .trim()
-  .split("\n")
-  .filter(Boolean)
-  .map((line) => line.split("\t").at(-1))
-for (const path of paths) {
-  if (isProtectedPath(path)) {
-    throw new Error(`refusing to apply candidate change to protected path: ${path}`)
-  }
+}).trim()
+if (current !== metadata.base_sha) {
+  throw new Error(`main moved during release: expected ${metadata.base_sha}, found ${current}`)
+}
+const parents = execFileSync(
+  "git",
+  ["rev-list", "--parents", "-n", "1", metadata.candidate_sha],
+  { cwd: root, encoding: "utf8" },
+).trim().split(/\s+/).slice(1)
+if (parents.length !== 2) throw new Error("candidate is not a two-parent merge commit")
+if (parents[0] !== metadata.base_sha || parents[1] !== metadata.upstream_sha) {
+  throw new Error(`candidate ancestry mismatch: ${parents.join(", ")}`)
 }
 
-execFileSync("git", ["apply", "--check", patch], { cwd: root, stdio: "inherit" })
-execFileSync("git", ["apply", patch], { cwd: root, stdio: "inherit" })
+execFileSync("git", ["switch", "--detach", metadata.candidate_sha], {
+  cwd: root,
+  stdio: "inherit",
+})
 writeFileSync(statePath, `${JSON.stringify(result.state, null, 2)}\n`)
 
 execFileSync("git", ["add", "-A"], { cwd: root, stdio: "inherit" })

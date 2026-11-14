@@ -37,6 +37,7 @@ import { useHub } from "@/lib/hub-context"
 import { useLayout } from "@/lib/layout-context"
 import { getBotSnapshot } from "@/lib/server-fns"
 import { botInstanceName } from "@/lib/types"
+import { boundedChatRequestMessages } from "@/lib/chat-request"
 import type { UIMessage } from "ai"
 import type { BotAgent } from "@/agents/bot-agent"
 import type { BrowserNav } from "@/components/computer-card"
@@ -311,6 +312,9 @@ function LiveBot({
     agent,
     getInitialMessages: null,
     messages: initialMessages,
+    prepareSendMessagesRequest: ({ messages, trigger }) => ({
+      body: { messages: boundedChatRequestMessages(messages, trigger) },
+    }),
   })
   useEffect(() => {
     rememberBot(botId, { state, messages: chat.messages })
